@@ -22,7 +22,9 @@ module Paperclip
         :use_default_time_zone => true,
         :hash_digest           => "SHA1",
         :hash_data             => ":class/:attachment/:id/:style/:updated_at",
-        :preserve_files        => false
+        :preserve_files        => false,
+        :encrypted             => false,
+        :encryption_key        => nil
       }
     end
 
@@ -57,6 +59,8 @@ module Paperclip
       @convert_options       = options[:convert_options]
       @processors            = options[:processors]
       @preserve_files        = options[:preserve_files]
+      @encrypted             = options[:encrypted]
+      @encryption_key        = options[:encryption_key]
       @options               = options
       @post_processing       = true
       @queued_for_delete     = []
@@ -65,6 +69,8 @@ module Paperclip
       @dirty                 = false
 
       initialize_storage
+
+      require 'crypt/blowfish' if @encrypted
     end
 
     def styles
@@ -158,10 +164,36 @@ module Paperclip
     # Saves the file, if there are no errors. If there are, it flushes them to
     # the instance's errors and returns false, cancelling the save.
     def save
+      encrypt if @encrypted
       flush_deletes
       flush_writes
       @dirty = false
       true
+    end
+
+    # Replace the file with an encrypted version
+    def encrypt
+      raise ":encryption_key not set" unless @encryption_key
+
+      for style, file in @queued_for_write do
+        encrypted_filename = file.path + '_encrypted'
+        Crypt::Blowfish.new(@encryption_key).encrypt_file(file.path, file.path + '_encrypted')
+        file.close
+        @queued_for_write[style] = File.open(encrypted_filename)
+       end
+    end
+
+    # Replace the encrypted file with a decrypted version
+    def to_file_decrypted(style = default_style)
+      raise "File was not encrypted" unless @encrypted
+      raise ":encryption_key not set" unless @encryption_key
+
+      encrypted_file = to_file(style)
+      decrypted_filename = encrypted_file.path + '_decrypted'
+      Crypt::Blowfish.new(@encryption_key).decrypt_file(encrypted_file.path, decrypted_filename)
+      encrypted_file.close
+      decrypted_file = File.open(decrypted_filename)
+      decrypted_file
     end
 
     # Clears out the attachment. Has the same effect as previously assigning
